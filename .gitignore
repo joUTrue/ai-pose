@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtualenv
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS/Editor
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Large artifacts (추천: 절대 Git에 올리지 말기)
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.tar
+*.zip
+*.mp4
+
+# Docker / build cache
+*.tar.gz
+
+test/

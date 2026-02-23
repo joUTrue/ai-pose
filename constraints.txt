@@ -1,0 +1,2 @@
+# constraints.txt
+numpy==1.26.4
