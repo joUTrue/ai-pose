@@ -1,5 +1,9 @@
 _base_ = '../../_base_/default_runtime.py'
 
+excluded_labels = ['B05', 'B09', 'B12']
+active_labels = [f'B{i:02d}' for i in range(1, 13) if f'B{i:02d}' not in excluded_labels]
+num_classes = len(active_labels)
+
 model = dict(
     type='RecognizerGCN',
     backbone=dict(
@@ -9,43 +13,40 @@ model = dict(
         gcn_with_res=True,
         tcn_type='mstcn',
         graph_cfg=dict(layout='coco', mode='spatial')),
-    cls_head=dict(type='GCNHead', num_classes=9, in_channels=256, 
-                  loss_cls=dict(
-                      type='CrossEntropyLoss', class_weight=[2.0, 2.0, 1.0, 2.0, 1.0, 0.5, 2.5, 0.5, 1.5],
-                      loss_weight=1.0)))
+    cls_head=dict(type='GCNHead', num_classes=num_classes, in_channels=256))
 
 dataset_type = 'PoseDataset'
-ann_file = 'data/presentation_data_filtered.pkl'
+ann_file = 'data/presentation_data_filtered_260312.pkl'
+
 train_pipeline = [
     dict(type='PreNormalize2D'),
     dict(type='GenSkeFeat', dataset='coco', feats=['j']),
-    dict(type='UniformSampleFrames', clip_len=100),
+    dict(type='UniformSampleFrames', clip_len=10),
     dict(type='PoseDecode'),
     dict(type='FormatGCNInput', num_person=1),
     dict(type='PackActionInputs')
 ]
+
 val_pipeline = [
     dict(type='PreNormalize2D'),
     dict(type='GenSkeFeat', dataset='coco', feats=['j']),
-    dict(
-        type='UniformSampleFrames', clip_len=100, num_clips=1, test_mode=True),
+    dict(type='UniformSampleFrames', clip_len=10, num_clips=1, test_mode=True),
     dict(type='PoseDecode'),
     dict(type='FormatGCNInput', num_person=1),
     dict(type='PackActionInputs')
 ]
+
 test_pipeline = [
     dict(type='PreNormalize2D'),
     dict(type='GenSkeFeat', dataset='coco', feats=['j']),
-    dict(
-        type='UniformSampleFrames', clip_len=100, num_clips=10,
-        test_mode=True),
+    dict(type='UniformSampleFrames', clip_len=10, num_clips=10, test_mode=True),
     dict(type='PoseDecode'),
     dict(type='FormatGCNInput', num_person=1),
     dict(type='PackActionInputs')
 ]
 
 train_dataloader = dict(
-    batch_size=8,
+    batch_size=16,
     num_workers=2,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
@@ -54,6 +55,7 @@ train_dataloader = dict(
         ann_file=ann_file,
         pipeline=train_pipeline,
         split='train'))
+
 val_dataloader = dict(
     batch_size=16,
     num_workers=2,
@@ -65,6 +67,7 @@ val_dataloader = dict(
         pipeline=val_pipeline,
         split='val',
         test_mode=True))
+
 test_dataloader = dict(
     batch_size=1,
     num_workers=2,
@@ -81,35 +84,32 @@ val_evaluator = [dict(type='AccMetric')]
 test_evaluator = val_evaluator
 
 train_cfg = dict(
-    type='EpochBasedTrainLoop', max_epochs=50, val_begin=1, val_interval=1)
+    type='EpochBasedTrainLoop',
+    max_epochs=50,
+    val_begin=1,
+    val_interval=1)
 val_cfg = dict(type='ValLoop')
 test_cfg = dict(type='TestLoop')
 
 param_scheduler = [
     dict(
-        type='LinearLR', # 학습 초기 웜업 추가
-        start_factor=0.1,
-        by_epoch=True,
-        begin=0,
-        end=5),
-    dict(
         type='CosineAnnealingLR',
         eta_min=0,
-        T_max=45,
-        begin=5,
-        end=50,
+        T_max=50,
         by_epoch=True,
         convert_to_iter_based=True)
 ]
 
 optim_wrapper = dict(
     optimizer=dict(
-        type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0005, nesterov=True))
+        type='SGD',
+        lr=0.05,
+        momentum=0.9,
+        weight_decay=0.0005,
+        nesterov=True))
 
-default_hooks = dict(checkpoint=dict(interval=1), logger=dict(interval=100))
+default_hooks = dict(
+    checkpoint=dict(interval=1),
+    logger=dict(interval=100))
 
-# Default setting for scaling LR automatically
-#   - `enable` means enable scaling LR automatically
-#       or not by default.
-#   - `base_batch_size` = (8 GPUs) x (16 samples per GPU).
 auto_scale_lr = dict(enable=False, base_batch_size=128)

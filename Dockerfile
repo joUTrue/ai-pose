@@ -53,6 +53,8 @@ COPY app/ /workspace/app/
 COPY config/ /workspace/config/
 COPY checkpoints/ /workspace/checkpoints/
 
+COPY run_pose_from_url.py /workspace/run_pose_from_url.py
+
 # Entrypoint script
 COPY start.sh /workspace/start.sh
 EXPOSE 8000
