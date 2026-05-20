@@ -40,29 +40,51 @@ register_mmaction()
 
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-DET_CONFIG = "config/detection/yolox/yolox_s_8xb8-300e_coco.py"
-DET_CHECKPOINT = "config/detection/yolox/yolox_s_8x8_300e_coco_20211121_095711-4592a793.pth"
+DET_CONFIG = os.getenv(
+    "DET_CONFIG",
+    "config/detection/rtmdet/rtmdet_tiny_8xb32-300e_coco.py",
+)
+DET_CHECKPOINT = os.getenv(
+    "DET_CHECKPOINT",
+    "config/detection/rtmdet/rtmdet_tiny_8xb32-300e_coco_20220902_112414-78e30dcc.pth",
+)
 
-POSE_CONFIG = "config/pose/td-hm_hrnet-w48_dark-8xb32-210e_coco-384x288.py"
-POSE_CHECKPOINT = "config/pose/td-hm_hrnet-w48_dark-8xb32-210e_coco-384x288-39c3c381_20220916.pth"
+POSE_CONFIG = os.getenv(
+    "POSE_CONFIG",
+    "config/pose/rtmpose/rtmpose-s_8xb256-420e_body8-256x192.py",
+)
+POSE_CHECKPOINT = os.getenv(
+    "POSE_CHECKPOINT",
+    "config/pose/rtmpose/rtmpose-s_simcc-body7_pt-body7_420e-256x192-acd4a1ef_20230504.pth",
+)
 
-STGCN_CONFIG = "config/skeleton/stgcnpp/stgcnpp_8xb16-joint-u100-80e_ntu60-xsub-keypoint-2d_forPresentation_filtered.py"
-STGCN_CHECKPOINT = "checkpoints/20260312_1806.pth"
+STGCN_CONFIG = os.getenv(
+    "STGCN_CONFIG",
+    "config/skeleton/stgcnpp/stgcnpp_8xb16-joint-u100-80e_ntu60-xsub-keypoint-2d_onlyaction_withstand.py"
+)
+STGCN_CHECKPOINT = os.getenv(
+    "STGCN_CHECKPOINT",
+    "checkpoints/20260506_1533.pth"
+)
 
-LABEL_NAMES = [
-    "Touching head",    #B01
-    "Touching face",    #B02
-    "Touching body",    #B03
-    "Touching hand",     #B04
-    #"Shaking head",    #B05 (excluded)
-    "Swaying head",     #B06
-    "Bowing",     #B07
-    "Holding back",       #B08
-    #"Swaying hand",     #B09 (excluded)
-    "Swaying body",     #B10
-    "Slanting",     #B11
-    #"Skewing"     #B12 (excluded)
-    ]
+LABEL_NAME_BY_CODE = {
+    "B01": "Touching head",
+    "B02": "Touching face",
+    "B03": "Touching body",
+    "B04": "Touching hand",
+    "B05": "Shaking head",
+    "B06": "Swaying head",
+    "B07": "Bowing",
+    "B08": "Holding back",
+    "B09": "Swaying hand",
+    "B10": "Swaying body",
+    "B11": "Slanting",
+    "B12": "Skewing",
+    "B13": "Standing",
+}
+
+DEFAULT_ACTIVE_LABEL_CODES = ["B01", "B02", "B03", "B04", "B06", "B10", "B13"]
+LABEL_NAMES = [LABEL_NAME_BY_CODE[code] for code in DEFAULT_ACTIVE_LABEL_CODES]
 
 SKELETON_LINKS = [
     (15, 13), (13, 11), (16, 14), (14, 12), (11, 12), (5, 11), (6, 12),
@@ -79,11 +101,33 @@ _SCOPE_LOCK = threading.Lock()
 _det_model = None
 _pose_model = None
 _recognizer = None
+_recognizer_labels = LABEL_NAMES
+
+
+def _labels_from_stgcn_config() -> List[str]:
+    cfg = mmengine.Config.fromfile(STGCN_CONFIG)
+    active_labels = getattr(cfg, "active_labels", None)
+    if active_labels:
+        return [LABEL_NAME_BY_CODE.get(str(code), str(code)) for code in active_labels]
+
+    try:
+        num_classes = int(cfg.model["cls_head"]["num_classes"])
+    except Exception:
+        num_classes = len(LABEL_NAMES)
+
+    all_codes = list(LABEL_NAME_BY_CODE.keys())
+    return [LABEL_NAME_BY_CODE[code] for code in all_codes[:num_classes]]
+
+
+def _to_numpy(value: Any) -> np.ndarray:
+    if hasattr(value, "detach"):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
 
 
 def load_models_once() -> None:
     """Load models once during FastAPI startup."""
-    global _det_model, _pose_model, _recognizer
+    global _det_model, _pose_model, _recognizer, _recognizer_labels
     if _det_model is not None:
         return
     print(f"[MODEL] Loading models on {DEVICE}...", flush=True)
@@ -104,6 +148,8 @@ def load_models_once() -> None:
     with _SCOPE_LOCK:
         init_default_scope("mmaction")
         _recognizer = init_recognizer(STGCN_CONFIG, STGCN_CHECKPOINT, device=DEVICE)
+        _recognizer_labels = _labels_from_stgcn_config()
+        print(f"[MODEL] Recognizer labels: {_recognizer_labels}", flush=True)
 
 
 @dataclass
@@ -120,8 +166,17 @@ class RecogParams:
 
 
 def _topk_from_probs(probs: np.ndarray, topk: int) -> List[Tuple[str, float]]:
-    idxs = np.argsort(probs)[-topk:][::-1]
-    return [(LABEL_NAMES[i], float(probs[i])) for i in idxs]
+    flat_probs = np.asarray(probs, dtype=np.float32).reshape(-1)
+    if flat_probs.size == 0:
+        return []
+
+    effective_topk = max(1, min(int(topk), flat_probs.size))
+    idxs = np.argsort(flat_probs)[-effective_topk:][::-1]
+    labels = _recognizer_labels or LABEL_NAMES
+    return [
+        (labels[i] if i < len(labels) else f"Class {i}", float(flat_probs[i]))
+        for i in idxs
+    ]
 
 
 def _render_progress(current_frame: int, total_frames: int, started_at: float) -> str:
@@ -291,11 +346,16 @@ def analyze_video_to_timeline(
 
                 if len(pose_results) > 0:
                     pred_instances = pose_results[0].pred_instances
-                    keypoints = pred_instances.keypoints[0]
-                    scores = pred_instances.keypoint_scores[0]
+                    keypoints = getattr(pred_instances, "keypoints", None)
+                    scores = getattr(pred_instances, "keypoint_scores", None)
 
-                    current_frame_skeleton = np.concatenate([keypoints, scores[:, None]], axis=-1).astype(np.float32)
-                    current_frame_skeleton[:, 2] *= float(params.conf_scale)
+                    if keypoints is not None and scores is not None and len(keypoints) > 0 and len(scores) > 0:
+                        keypoints = _to_numpy(keypoints[0])
+                        scores = _to_numpy(scores[0])
+
+                        if keypoints.ndim == 2 and scores.ndim == 1 and len(keypoints) == len(scores):
+                            current_frame_skeleton = np.concatenate([keypoints, scores[:, None]], axis=-1).astype(np.float32)
+                            current_frame_skeleton[:, 2] *= float(params.conf_scale)
         
 
             skeleton_buffer.append(current_frame_skeleton)
@@ -316,7 +376,12 @@ def analyze_video_to_timeline(
                     recog_result = inference_recognizer(_recognizer, fake_anno)
 
                 probs = recog_result.pred_score.detach().cpu().numpy()
-                top1_label, top1_score = _topk_from_probs(probs, topk=1)[0]
+                topk_scores = _topk_from_probs(probs, topk=1)
+                if not topk_scores:
+                    cnt += 1
+                    continue
+
+                top1_label, top1_score = topk_scores[0]
 
                 t_sec = cnt / fps
                 per_frame_preds.append({

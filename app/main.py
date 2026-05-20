@@ -15,7 +15,8 @@ app = FastAPI(title="Pose/Gesture Timeline API")
 
 
 class InferRequest(BaseModel):
-    video_url: str
+    video_url: Optional[str] = None
+    video_path: Optional[str] = None
 
 
 @app.on_event("startup")
@@ -48,10 +49,16 @@ def _download_to_temp(url: str) -> str:
     return out_path
 
 
-def _run_pose_analysis(video_url: str, frame_interval: int = 1, window_sec: float = 2.0, det_score_thr: float = 0.5, score_threshold: float = 0.30):
+def _run_pose_analysis(video_url: Optional[str] = None, video_path: Optional[str] = None, frame_interval: int = 5, window_sec: float = 2.0, det_score_thr: float = 0.5, score_threshold: float = 0.75):
     tmp_path = None
     try:
-        tmp_path = _download_to_temp(video_url)
+        if video_path:
+            input_path = video_path
+        elif video_url:
+            tmp_path = _download_to_temp(video_url)
+            input_path = tmp_path
+        else:
+            raise RuntimeError("Provide either video_path or video_url.")
 
         params = RecogParams(
             frame_interval=frame_interval,
@@ -60,7 +67,7 @@ def _run_pose_analysis(video_url: str, frame_interval: int = 1, window_sec: floa
             score_threshold=score_threshold,
         )
 
-        result = analyze_video_to_timeline(tmp_path, params=params)
+        result = analyze_video_to_timeline(input_path, params=params)
 
         return {
             "ok": True,
@@ -78,7 +85,7 @@ def _run_pose_analysis(video_url: str, frame_interval: int = 1, window_sec: floa
 @app.post("/infer")
 def infer(req: InferRequest):
     try:
-        return _run_pose_analysis(video_url=req.video_url)
+        return _run_pose_analysis(video_url=req.video_url, video_path=req.video_path)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -89,10 +96,10 @@ def infer(req: InferRequest):
 def recognize(
     file: Optional[UploadFile] = File(default=None),
     video_url: Optional[str] = Form(default=None),
-    frame_interval: int = Form(default=1),
+    frame_interval: int = Form(default=5),
     window_sec: float = Form(default=2.0),
     det_score_thr: float = Form(default=0.5),
-    score_threshold: float = Form(default=0.30),
+    score_threshold: float = Form(default=0.75),
 ):
     if file is None and not video_url:
         raise HTTPException(status_code=400, detail="Provide either file or video_url.")
